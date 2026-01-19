@@ -21,28 +21,110 @@ Training Data Features:
 - classes.txt file with class definitions
 
 Usage:
-    Set save_for_training=True in main() to enable training data collection
-    Adjust training_threshold to control data quality (default: 0.6)
+    Modify the CONFIG section below to customize settings
+    Set SAVE_FOR_TRAINING=True to enable training data collection
+    Adjust TRAINING_THRESHOLD to control data quality
 """
+
+#################################### CONFIGURATION SECTION ####################################
+# Video processing settings
+VIDEO_PATH = "tank_videos/v4.mp4"
+MAX_FRAMES = 20
+OUTPUT_DIR = "focused_video_results"
+
+# Training data settings
+SAVE_FOR_TRAINING = True  # Set to False to disable training data saving
+TRAINING_THRESHOLD = 0.6  # Minimum confidence for training data
+TRAINING_DIR = "training_data"
+IMAGE_QUALITY = 95  # JPEG quality for saved training images (1-100)
+
+# Target objects and their prompts
+TARGET_PROMPTS = [
+    # Format: (label, prompt)
+    # ("goggles", "goggles"),
+    # ("mask", "mask"), 
+    # ("gloves", "gloves"),
+    # ("cap", "protective cap"),
+    # ("gown", "protective gown")
+    ("tank", "army tank")
+]
+
+# Confidence thresholds for different object types
+CONFIDENCE_THRESHOLDS = {
+    # Adjust these based on detection difficulty for each object type
+    # "gloves": 0.5,    # Lower threshold for harder-to-detect objects
+    # "mask": 0.8,      # Higher threshold for easily detectable objects
+    # "goggles": 0.7,   # Medium threshold
+    # "cap": 0.6,
+    # "gown": 0.7,
+    "tank": 0.5
+}
+
+# Default confidence threshold for objects not in CONFIDENCE_THRESHOLDS
+DEFAULT_CONFIDENCE_THRESHOLD = 0.8
+
+# Visualization colors for different object types (RGB values 0-1)
+VISUALIZATION_COLORS = {
+    # "goggles": [1.0, 0.2, 0.2],  # Bright Red
+    # "mask": [0.2, 1.0, 0.2],     # Bright Green
+    # "gloves": [0.2, 0.2, 1.0],   # Bright Blue
+    # "cap": [1.0, 0.5, 0.0],      # Orange
+    # "gown": [0.8, 0.0, 0.8],     # Magenta
+    "tank": [0.0, 1.0, 0.5],       # Cyan
+}
+
+# Default color for objects not in VISUALIZATION_COLORS
+DEFAULT_COLOR = [0.7, 0.7, 0.7]  # Light gray
+
+# Class mapping for YOLO training (class_name: class_id)
+CLASS_MAPPING = {
+    "tank": 0,
+    # Add more classes as needed:
+    # "goggles": 1,
+    # "mask": 2,
+    # "gloves": 3,
+    # "cap": 4,
+    # "gown": 5
+}
+
+# Visualization settings
+FIGURE_SIZE = (12, 6)
+DPI = 150
+MASK_ALPHA = 0.7  # Transparency for mask overlays
+BOX_LINE_WIDTH = 3
+FONT_SIZE = 12
+LABEL_FONT_SIZE = 14
+TITLE_FONT_SIZE = 16
+
+#################################### END CONFIGURATION ####################################
 
 #################################### Frame-by-Frame Video Processing ####################################
 from sam3.model_builder import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
 
-def process_focused_video_segmentation(video_path, target_prompts, output_dir="focused_video_results", 
-                                      max_frames=5, save_for_training=False, training_threshold=0.7, training_dir="training_data"):
+def process_focused_video_segmentation(video_path=None, target_prompts=None, output_dir=None, 
+                                      max_frames=None, save_for_training=None, training_threshold=None, training_dir=None):
     """
     Process video segmentation ONLY for specific target objects with high precision
     
     Args:
-        video_path: Path to video file
-        target_prompts: List of (label, prompt) tuples
-        output_dir: Directory for visualization results
-        max_frames: Maximum number of frames to process
-        save_for_training: If True, save annotations in YOLO format for training
-        training_threshold: Minimum confidence threshold for saving training data
-        training_dir: Directory to save training data
+        video_path: Path to video file (uses VIDEO_PATH if None)
+        target_prompts: List of (label, prompt) tuples (uses TARGET_PROMPTS if None)
+        output_dir: Directory for visualization results (uses OUTPUT_DIR if None)
+        max_frames: Maximum number of frames to process (uses MAX_FRAMES if None)
+        save_for_training: If True, save annotations in YOLO format (uses SAVE_FOR_TRAINING if None)
+        training_threshold: Minimum confidence threshold for saving training data (uses TRAINING_THRESHOLD if None)
+        training_dir: Directory to save training data (uses TRAINING_DIR if None)
     """
+    # Use configuration defaults if parameters not provided
+    video_path = video_path or VIDEO_PATH
+    target_prompts = target_prompts or TARGET_PROMPTS
+    output_dir = output_dir or OUTPUT_DIR
+    max_frames = max_frames if max_frames is not None else MAX_FRAMES
+    save_for_training = save_for_training if save_for_training is not None else SAVE_FOR_TRAINING
+    training_threshold = training_threshold if training_threshold is not None else TRAINING_THRESHOLD
+    training_dir = training_dir or TRAINING_DIR
+    
     os.makedirs(output_dir, exist_ok=True)
     
     # Setup training data directories if needed
@@ -57,14 +139,15 @@ def process_focused_video_segmentation(video_path, target_prompts, output_dir="f
         os.makedirs(training_images_dir, exist_ok=True)
         os.makedirs(training_labels_dir, exist_ok=True)
         
-        # Create class mapping (tank = 0, can be extended later)
-        class_mapping = {"tank": 0}
+        # Create class mapping (use configuration)
+        class_mapping = CLASS_MAPPING.copy()
         
         # Create or update classes.txt
         classes_file = os.path.join(training_dir, "classes.txt")
         if not os.path.exists(classes_file):
             with open(classes_file, 'w') as f:
-                f.write("tank\n")
+                for class_name in sorted(class_mapping.keys(), key=lambda x: class_mapping[x]):
+                    f.write(f"{class_name}\n")
             print(f"Created classes file: {classes_file}")
         
         print(f"Training data will be saved to: {training_dir}")
@@ -120,15 +203,8 @@ def process_focused_video_segmentation(video_path, target_prompts, output_dir="f
             try:
                 output = processor.set_text_prompt(state=inference_state, prompt=prompt)
                 
-                # ADAPTIVE confidence filtering - different thresholds for different objects
-                confidence_thresholds = {
-                    # 'gloves': 0.5,    # Lower threshold for gloves (harder to detect)
-                    # 'mask': 0.8,      # High threshold for masks
-                    # 'goggles': 0.7,   # Medium threshold for goggles
-                    "tank": 0.5
-                }
-                
-                threshold = confidence_thresholds.get(label, 0.8)
+                # ADAPTIVE confidence filtering - use configuration
+                threshold = CONFIDENCE_THRESHOLDS.get(label, DEFAULT_CONFIDENCE_THRESHOLD)
                 print(f"    Using confidence threshold: {threshold} for {label}")
                 
                 high_conf_masks, high_conf_boxes, high_conf_scores = [], [], []
@@ -188,18 +264,11 @@ def process_focused_video_segmentation(video_path, target_prompts, output_dir="f
     cap.release()
     return all_results
 
-def visualize_focused_results(all_results, output_dir="focused_video_results"):
+def visualize_focused_results(all_results, output_dir=None):
     """
     Create clean visualizations showing ONLY the target objects
     """
-    # Colors for target objects only
-    target_colors = {
-        # 'goggles': [1.0, 0.2, 0.2],         # Bright Red
-        # 'mask': [0.2, 1.0, 0.2],            # Bright Green
-        # 'gloves': [0.2, 0.2, 1.0],          # Bright Blue
-        # 'cap': [1.0, 0.5, 0.0],             # Orange
-        'tank': [0.0, 1.0, 0.5], # Cyan
-    }
+    output_dir = output_dir or OUTPUT_DIR
     
     def draw_detection(mask, box, score, label, ax, color):
         # Draw mask
@@ -211,7 +280,7 @@ def visualize_focused_results(all_results, output_dir="focused_video_results"):
         if len(mask_np.shape) > 2:
             mask_np = mask_np.squeeze()
         
-        color_with_alpha = color + [0.7]  # Strong alpha for visibility
+        color_with_alpha = color + [MASK_ALPHA]  # Use configurable alpha
         h, w = mask_np.shape
         mask_image = mask_np.reshape(h, w, 1) * np.array(color_with_alpha).reshape(1, 1, -1)
         ax.imshow(mask_image)
@@ -224,13 +293,13 @@ def visualize_focused_results(all_results, output_dir="focused_video_results"):
         
         x0, y0, x1, y1 = box_np
         w, h = x1 - x0, y1 - y0
-        rect = plt.Rectangle((x0, y0), w, h, linewidth=3, edgecolor=color, facecolor='none')
+        rect = plt.Rectangle((x0, y0), w, h, linewidth=BOX_LINE_WIDTH, edgecolor=color, facecolor='none')
         ax.add_patch(rect)
         
         # Label with confidence
         score_val = float(score.cpu() if hasattr(score, 'cpu') else score)
         ax.text(x0, y0-10, f"{label.upper()}: {score_val:.2f}", 
-               color=color, fontsize=12, fontweight='bold',
+               color=color, fontsize=FONT_SIZE, fontweight='bold',
                bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8))
     
     for frame_idx, frame_data in all_results.items():
@@ -245,12 +314,12 @@ def visualize_focused_results(all_results, output_dir="focused_video_results"):
             continue
         
         # Create focused visualization
-        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-        fig.suptitle(f'FOCUSED DETECTION - Frame {frame_idx}', fontsize=16, fontweight='bold')
+        fig, axes = plt.subplots(1, 2, figsize=FIGURE_SIZE)
+        fig.suptitle(f'FOCUSED DETECTION - Frame {frame_idx}', fontsize=TITLE_FONT_SIZE, fontweight='bold')
         
         # Original frame
         axes[0].imshow(frame_rgb)
-        axes[0].set_title('Original Frame', fontsize=14)
+        axes[0].set_title('Original Frame', fontsize=LABEL_FONT_SIZE)
         axes[0].axis('off')
         
         # TARGET OBJECTS ONLY
@@ -259,21 +328,21 @@ def visualize_focused_results(all_results, output_dir="focused_video_results"):
         detected_objects = []
         for label, results in frame_results.items():
             if results["masks"]:  # Only process if objects were found
-                color = target_colors.get(label, [0.7, 0.7, 0.7])
+                color = VISUALIZATION_COLORS.get(label, DEFAULT_COLOR)
                 
                 for mask, box, score in zip(results["masks"], results["boxes"], results["scores"]):
                     draw_detection(mask, box, score, label, axes[1], color)
                     detected_objects.append(f"{label}({score:.2f})")
         
         title = f"TARGET OBJECTS FOUND: {', '.join(detected_objects)}" if detected_objects else "NO TARGETS"
-        axes[1].set_title(title, fontsize=12, fontweight='bold')
+        axes[1].set_title(title, fontsize=FONT_SIZE, fontweight='bold')
         axes[1].axis('off')
         
         plt.tight_layout()
         
         # Save result
         output_path = os.path.join(output_dir, f'focused_frame_{frame_idx:04d}.png')
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.savefig(output_path, dpi=DPI, bbox_inches='tight')
         print(f"✓ Saved focused results: {output_path}")
         plt.close()
 
@@ -322,7 +391,7 @@ def save_training_data(frame_rgb, frame_results, frame_idx, training_images_dir,
         # Save image
         img_path = os.path.join(training_images_dir, f"{base_name}.jpg")
         img_pil = Image.fromarray(frame_rgb)
-        img_pil.save(img_path, "JPEG", quality=95)
+        img_pil.save(img_path, "JPEG", quality=IMAGE_QUALITY)
         
         # Save annotations
         label_path = os.path.join(training_labels_dir, f"{base_name}.txt")
@@ -338,48 +407,24 @@ def main():
     print("=== SAM3 FOCUSED VIDEO SEGMENTATION ===")
     print("Only detecting specific target objects with high confidence")
     
-    # Configuration
-    video_path = "tank_videos/v4.mp4"
-    max_frames = 20
+    print(f"Video: {VIDEO_PATH}")
+    print(f"Target objects: {[f'{label} ({prompt})' for label, prompt in TARGET_PROMPTS]}")
+    print(f"Max frames: {MAX_FRAMES}")
     
-    # Training data parameters
-    save_for_training = True  # Set to False to disable training data saving
-    training_threshold = 0.6  # Minimum confidence for training data (adjustable)
-    training_dir = "training_data"  # Directory for YOLO training data
-    
-    # ONLY the objects you want to detect - try multiple prompts for gloves
-    target_prompts = [
-        # ("goggles", "goggles"),
-        # ("mask", "mask"), 
-        # ("gloves", "gloves"),                # Try simple "gloves" first
-        # ("cap","protective cap"),
-        # ("gown","protective gown")
-        ("tank", "army tank")
-    ]
-    
-    print(f"Video: {video_path}")
-    print(f"Target objects: {[f'{label} ({prompt})' for label, prompt in target_prompts]}")
-    print(f"Max frames: {max_frames}")
-    
-    if save_for_training:
+    if SAVE_FOR_TRAINING:
         print(f"🎯 Training data collection: ENABLED")
-        print(f"   Training threshold: {training_threshold}")
-        print(f"   Training directory: {training_dir}")
+        print(f"   Training threshold: {TRAINING_THRESHOLD}")
+        print(f"   Training directory: {TRAINING_DIR}")
     else:
         print("🎯 Training data collection: DISABLED")
     
-    if not os.path.exists(video_path):
-        print(f"Error: Video file not found: {video_path}")
+    if not os.path.exists(VIDEO_PATH):
+        print(f"Error: Video file not found: {VIDEO_PATH}")
         return
     
     try:
-        # Process with focused detection
-        results = process_focused_video_segmentation(
-            video_path, target_prompts, max_frames=max_frames,
-            save_for_training=save_for_training, 
-            training_threshold=training_threshold,
-            training_dir=training_dir
-        )
+        # Process with focused detection using configuration
+        results = process_focused_video_segmentation()
         
         # Create clean visualizations
         visualize_focused_results(results)
@@ -410,20 +455,20 @@ def main():
         print("Check 'focused_video_results/' for clean visualizations!")
         
         # Training data summary
-        if save_for_training:
+        if SAVE_FOR_TRAINING:
             print("\n" + "="*50)
             print("TRAINING DATA SUMMARY")
             print("="*50)
             
-            training_images_dir = os.path.join(training_dir, "images")
-            training_labels_dir = os.path.join(training_dir, "labels")
+            training_images_dir = os.path.join(TRAINING_DIR, "images")
+            training_labels_dir = os.path.join(TRAINING_DIR, "labels")
             
             if os.path.exists(training_images_dir):
                 image_count = len([f for f in os.listdir(training_images_dir) if f.endswith(('.jpg', '.png'))])
                 label_count = len([f for f in os.listdir(training_labels_dir) if f.endswith('.txt')])
                 print(f"📂 Training images: {image_count}")
                 print(f"📄 Annotation files: {label_count}")
-                print(f"💾 Data saved to: {training_dir}/")
+                print(f"💾 Data saved to: {TRAINING_DIR}/")
                 print("   Structure:")
                 print(f"   ├── images/     ({image_count} files)")
                 print(f"   ├── labels/     ({label_count} files)")
@@ -438,3 +483,44 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+CONFIGURATION EXAMPLES:
+
+# Example 1: Basic tank detection
+VIDEO_PATH = "tank_videos/v4.mp4"
+TARGET_PROMPTS = [("tank", "army tank")]
+MAX_FRAMES = 20
+
+# Example 2: PPE detection setup
+VIDEO_PATH = "ppe_video.mp4"
+TARGET_PROMPTS = [
+    ("goggles", "goggles"),
+    ("mask", "face mask"),
+    ("gloves", "safety gloves"),
+    ("cap", "hard hat")
+]
+CONFIDENCE_THRESHOLDS = {
+    "goggles": 0.6,
+    "mask": 0.8,
+    "gloves": 0.5,  # Lower threshold for harder detection
+    "cap": 0.7
+}
+VISUALIZATION_COLORS = {
+    "goggles": [1.0, 0.2, 0.2],  # Red
+    "mask": [0.2, 1.0, 0.2],     # Green
+    "gloves": [0.2, 0.2, 1.0],   # Blue
+    "cap": [1.0, 0.5, 0.0]       # Orange
+}
+
+# Example 3: High-quality training data collection
+SAVE_FOR_TRAINING = True
+TRAINING_THRESHOLD = 0.8  # Higher threshold for better quality
+IMAGE_QUALITY = 100  # Maximum quality
+MAX_FRAMES = 100  # More frames for better dataset
+
+# Example 4: Quick testing setup
+SAVE_FOR_TRAINING = False
+MAX_FRAMES = 5
+TRAINING_THRESHOLD = 0.5  # Lower threshold to see more detections
+"""
